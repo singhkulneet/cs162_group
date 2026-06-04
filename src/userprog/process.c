@@ -22,9 +22,11 @@
 
 static struct semaphore temporary;
 static thread_func start_process NO_RETURN;
-static thread_func start_pthread NO_RETURN;
+// static thread_func start_pthread NO_RETURN;
 static bool load(const char* file_name, void (**eip)(void), void** esp);
+static bool load_stack(const char* file_name, void** esp);
 bool setup_thread(void (**eip)(void), void** esp);
+void push(void** stack, void* buf, size_t size);
 
 /* Initializes user programs in the system by ensuring the main
    thread has a minimal PCB so that it can execute and wait for
@@ -100,6 +102,8 @@ static void start_process(void* file_name_) {
     if_.cs = SEL_UCSEG;
     if_.eflags = FLAG_IF | FLAG_MBS;
     success = load(file_name, &if_.eip, &if_.esp);
+    if (success)
+      load_stack(file_name, &if_.esp);
   }
 
   /* Handle failure with succesful PCB malloc. Must free the PCB */
@@ -483,6 +487,50 @@ static bool setup_stack(void** esp) {
   return success;
 }
 
+void push(void** stack, void* buf, size_t size) {
+  *stack -= size;
+  memcpy(*stack, buf, size);
+}
+
+static bool load_stack(const char* file_name, void** esp) {
+  if (!file_name || !esp)
+    return false;
+  // Copy file name to string on heap
+  size_t str_size = strlen(file_name) + 1;
+  char* file_cpy = malloc(str_size);
+  strlcpy(file_cpy, file_name, str_size);
+
+  // Parse Arg array
+  uint32_t argc = 0;
+  char* argv[64]; // supporting up to 64 arguments (can be changed later) *uses 256 bytes*
+  char *token, *save_ptr;
+  for (token = strtok_r(file_cpy, " ", &save_ptr); token != NULL && argc < sizeof(argv);
+       token = strtok_r(NULL, " ", &save_ptr)) {
+    push(esp, token, strlen(token) + 1);
+    argv[argc++] = (char*)*esp;
+  }
+  argv[argc] = 0; // null pointer sentinel
+
+  // Align stack
+  uint32_t dummy = 0;
+  size_t allignment = ((2 * argc + 4) * 4) % 16;
+  for (size_t i = 0; i < allignment; i++)
+    push(esp, &dummy, 1); // stack-align
+
+  // push arg vector
+  for (int i = argc; i >= 0; i--) {
+    push(esp, &argv[i], sizeof(char*));
+  }
+  dummy = (uint32_t)*esp;
+  push(esp, &dummy, sizeof(dummy)); // address of argv[0]
+  push(esp, &argc, sizeof(argc));   // arguement count
+  dummy = 0;
+  push(esp, &dummy, sizeof(dummy)); // fake “return address”
+
+  free(file_cpy);
+  return true;
+}
+
 /* Adds a mapping from user virtual address UPAGE to kernel
    virtual address KPAGE to the page table.
    If WRITABLE is true, the user process may modify the page;
@@ -534,7 +582,7 @@ tid_t pthread_execute(stub_fun sf UNUSED, pthread_fun tf UNUSED, void* arg UNUSE
 
    This function will be implemented in Project 2: Multithreading and
    should be similar to start_process (). For now, it does nothing. */
-static void start_pthread(void* exec_ UNUSED) {}
+// static void start_pthread(void* exec_ UNUSED) {}
 
 /* Waits for thread with TID to die, if that thread was spawned
    in the same process and has not been waited on yet. Returns TID on
