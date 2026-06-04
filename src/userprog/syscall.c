@@ -21,9 +21,28 @@ static void syscall_handler(struct intr_frame* f UNUSED) {
 
   /* printf("System call number: %d\n", args[0]); */
 
-  if (args[0] == SYS_EXIT) {
-    f->eax = args[1];
-    printf("%s: exit(%d)\n", thread_current()->pcb->process_name, args[1]);
-    process_exit();
+  switch (args[0]) {
+    case SYS_EXIT:
+      f->eax = args[1];
+      printf("%s: exit(%d)\n", thread_current()->pcb->process_name, args[1]);
+      process_exit();
+      break;
+
+    case SYS_WRITE:
+      int fd = args[1];
+      char* buf = (char*)args[2];
+      uint32_t size = args[3];
+      if (fd == STDOUT_FILENO) {
+        putbuf(buf, size);
+      }
+      f->eax = size;
+      break;
+
+    case SYS_PRACTICE:
+      f->eax = (int)args[1] + 1;
+      break;
+
+    default:
+      break;
   }
 }
