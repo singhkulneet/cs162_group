@@ -64,8 +64,15 @@ pid_t process_execute(const char* file_name) {
     return TID_ERROR;
   strlcpy(fn_copy, file_name, PGSIZE);
 
+  /* thread_create() uses file_name as the thread/process name */
+  char prog_name[16];
+  strlcpy(prog_name, file_name, sizeof prog_name);
+  char* prog_name_end = strchr(prog_name, ' ');
+  if (prog_name_end != NULL)
+    *prog_name_end = '\0';
+
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create(file_name, PRI_DEFAULT, start_process, fn_copy);
+  tid = thread_create(prog_name, PRI_DEFAULT, start_process, fn_copy);
   if (tid == TID_ERROR)
     palloc_free_page(fn_copy);
   return tid;
@@ -103,7 +110,7 @@ static void start_process(void* file_name_) {
     if_.eflags = FLAG_IF | FLAG_MBS;
     success = load(file_name, &if_.eip, &if_.esp);
     if (success)
-      load_stack(file_name, &if_.esp);
+      success = load_stack(file_name, &if_.esp);
   }
 
   /* Handle failure with succesful PCB malloc. Must free the PCB */
@@ -286,10 +293,16 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
     goto done;
   process_activate();
 
-  /* Open executable file. */
-  file = filesys_open(file_name);
+  /* filesys_open() needs only the binary name */
+  char exec_name[128];
+  strlcpy(exec_name, file_name, sizeof exec_name);
+  char* exec_name_end = strchr(exec_name, ' ');
+  if (exec_name_end != NULL)
+    *exec_name_end = '\0';
+
+  file = filesys_open(exec_name);
   if (file == NULL) {
-    printf("load: %s: open failed\n", file_name);
+    printf("load: %s: open failed\n", exec_name);
     goto done;
   }
 
@@ -476,13 +489,10 @@ static bool setup_stack(void** esp) {
   kpage = palloc_get_page(PAL_USER | PAL_ZERO);
   if (kpage != NULL) {
     success = install_page(((uint8_t*)PHYS_BASE) - PGSIZE, kpage, true);
-    if (success) {
-      int offset = 20;
-      kpage[PGSIZE - offset + 4] = 1;
-      *esp = PHYS_BASE - offset;
-    } else {
+    if (success)
+      *esp = PHYS_BASE;
+    else
       palloc_free_page(kpage);
-    }
   }
   return success;
 }
@@ -497,29 +507,32 @@ static bool load_stack(const char* file_name, void** esp) {
     return false;
   // Copy file name to string on heap
   size_t str_size = strlen(file_name) + 1;
-  char* file_cpy = malloc(str_size);
+  char file_cpy[str_size];
   strlcpy(file_cpy, file_name, str_size);
 
   // Parse Arg array
   uint32_t argc = 0;
-  char* argv[64]; // supporting up to 64 arguments (can be changed later) *uses 256 bytes*
+  uint32_t argv[64]; // supporting up to 64 arguments (can be changed later) *uses 256 bytes*
   char *token, *save_ptr;
   for (token = strtok_r(file_cpy, " ", &save_ptr); token != NULL && argc < sizeof(argv);
        token = strtok_r(NULL, " ", &save_ptr)) {
     push(esp, token, strlen(token) + 1);
-    argv[argc++] = (char*)*esp;
+    argv[argc++] = (uint32_t)*esp;
   }
   argv[argc] = 0; // null pointer sentinel
 
-  // Align stack
+  /* Align the stack so that final_esp = 12 (mod 16) */
   uint32_t dummy = 0;
-  size_t allignment = ((2 * argc + 4) * 4) % 16;
-  for (size_t i = 0; i < allignment; i++)
-    push(esp, &dummy, 1); // stack-align
+  uint32_t post_size = (argc + 4) * 4;
+  uint32_t target = (12 + post_size) % 16;
+  uint32_t current = (uint32_t)*esp % 16;
+  uint32_t pad = (current - target + 16) % 16;
+  for (uint32_t i = 0; i < pad; i++)
+    push(esp, &dummy, 1);
 
   // push arg vector
   for (int i = argc; i >= 0; i--) {
-    push(esp, &argv[i], sizeof(char*));
+    push(esp, &argv[i], sizeof(uint32_t));
   }
   dummy = (uint32_t)*esp;
   push(esp, &dummy, sizeof(dummy)); // address of argv[0]
@@ -527,7 +540,6 @@ static bool load_stack(const char* file_name, void** esp) {
   dummy = 0;
   push(esp, &dummy, sizeof(dummy)); // fake “return address”
 
-  free(file_cpy);
   return true;
 }
 
