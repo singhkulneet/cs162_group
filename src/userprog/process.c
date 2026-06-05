@@ -41,8 +41,11 @@ void userprog_init(void) {
      so that t->pcb->pagedir is guaranteed to be NULL (the kernel's
      page directory) when t->pcb is assigned, because a timer interrupt
      can come at any time and activate our pagedir */
-  t->pcb = calloc(sizeof(struct process), 1);
-  success = t->pcb != NULL;
+  struct process* pcb = t->pcb;
+  pcb = calloc(sizeof(struct process), 1);
+  success = pcb != NULL;
+  pcb->fd_size = 2; // account for std in&out
+  memset(pcb->fd_table, 0, sizeof(pcb->fd_table)); // clear memory
 
   /* Kill the kernel if we did not succeed */
   ASSERT(success);
@@ -76,68 +79,6 @@ pid_t process_execute(const char* file_name) {
   if (tid == TID_ERROR)
     palloc_free_page(fn_copy);
   return tid;
-}
-
-/* A thread function that loads a user process and starts it
-   running. */
-static void start_process(void* file_name_) {
-  char* file_name = (char*)file_name_;
-  struct thread* t = thread_current();
-  struct intr_frame if_;
-  bool success, pcb_success;
-
-  /* Allocate process control block */
-  struct process* new_pcb = malloc(sizeof(struct process));
-  success = pcb_success = new_pcb != NULL;
-
-  /* Initialize process control block */
-  if (success) {
-    // Ensure that timer_interrupt() -> schedule() -> process_activate()
-    // does not try to activate our uninitialized pagedir
-    new_pcb->pagedir = NULL;
-    t->pcb = new_pcb;
-
-    // Continue initializing the PCB as normal
-    t->pcb->main_thread = t;
-    strlcpy(t->pcb->process_name, t->name, sizeof t->name);
-  }
-
-  /* Initialize interrupt frame and load executable. */
-  if (success) {
-    memset(&if_, 0, sizeof if_);
-    if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
-    if_.cs = SEL_UCSEG;
-    if_.eflags = FLAG_IF | FLAG_MBS;
-    success = load(file_name, &if_.eip, &if_.esp);
-    if (success)
-      success = load_stack(file_name, &if_.esp);
-  }
-
-  /* Handle failure with succesful PCB malloc. Must free the PCB */
-  if (!success && pcb_success) {
-    // Avoid race where PCB is freed before t->pcb is set to NULL
-    // If this happens, then an unfortuantely timed timer interrupt
-    // can try to activate the pagedir, but it is now freed memory
-    struct process* pcb_to_free = t->pcb;
-    t->pcb = NULL;
-    free(pcb_to_free);
-  }
-
-  /* Clean up. Exit on failure or jump to userspace */
-  palloc_free_page(file_name);
-  if (!success) {
-    sema_up(&temporary);
-    thread_exit();
-  }
-
-  /* Start the user process by simulating a return from an
-     interrupt, implemented by intr_exit (in
-     threads/intr-stubs.S).  Because intr_exit takes all of its
-     arguments on the stack in the form of a `struct intr_frame',
-     we just point the stack pointer (%esp) to our stack frame
-     and jump to it. */
-  asm volatile("movl %0, %%esp; jmp intr_exit" : : "g"(&if_) : "memory");
-  NOT_REACHED();
 }
 
 /* Waits for process with PID child_pid to die and returns its exit status.
@@ -625,3 +566,65 @@ void pthread_exit(void) {}
    This function will be implemented in Project 2: Multithreading. For
    now, it does nothing. */
 void pthread_exit_main(void) {}
+
+/* A thread function that loads a user process and starts it
+   running. */
+static void start_process(void* file_name_) {
+  char* file_name = (char*)file_name_;
+  struct thread* t = thread_current();
+  struct intr_frame if_;
+  bool success, pcb_success;
+
+  /* Allocate process control block */
+  struct process* new_pcb = malloc(sizeof(struct process));
+  success = pcb_success = new_pcb != NULL;
+
+  /* Initialize process control block */
+  if (success) {
+    // Ensure that timer_interrupt() -> schedule() -> process_activate()
+    // does not try to activate our uninitialized pagedir
+    new_pcb->pagedir = NULL;
+    t->pcb = new_pcb;
+
+    // Continue initializing the PCB as normal
+    t->pcb->main_thread = t;
+    strlcpy(t->pcb->process_name, t->name, sizeof t->name);
+  }
+
+  /* Initialize interrupt frame and load executable. */
+  if (success) {
+    memset(&if_, 0, sizeof if_);
+    if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
+    if_.cs = SEL_UCSEG;
+    if_.eflags = FLAG_IF | FLAG_MBS;
+    success = load(file_name, &if_.eip, &if_.esp);
+    if (success)
+      success = load_stack(file_name, &if_.esp);
+  }
+
+  /* Handle failure with succesful PCB malloc. Must free the PCB */
+  if (!success && pcb_success) {
+    // Avoid race where PCB is freed before t->pcb is set to NULL
+    // If this happens, then an unfortuantely timed timer interrupt
+    // can try to activate the pagedir, but it is now freed memory
+    struct process* pcb_to_free = t->pcb;
+    t->pcb = NULL;
+    free(pcb_to_free);
+  }
+
+  /* Clean up. Exit on failure or jump to userspace */
+  palloc_free_page(file_name);
+  if (!success) {
+    sema_up(&temporary);
+    thread_exit();
+  }
+
+  /* Start the user process by simulating a return from an
+     interrupt, implemented by intr_exit (in
+     threads/intr-stubs.S).  Because intr_exit takes all of its
+     arguments on the stack in the form of a `struct intr_frame',
+     we just point the stack pointer (%esp) to our stack frame
+     and jump to it. */
+  asm volatile("movl %0, %%esp; jmp intr_exit" : : "g"(&if_) : "memory");
+  NOT_REACHED();
+}

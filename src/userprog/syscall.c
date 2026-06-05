@@ -6,6 +6,8 @@
 #include "threads/vaddr.h"
 #include "userprog/pagedir.h"
 #include "userprog/process.h"
+#include "devices/shutdown.h"
+#include "filesys/filesys.h"
 
 static void syscall_handler(struct intr_frame*);
 
@@ -34,6 +36,8 @@ static void syscall_handler(struct intr_frame* f) {
   /* Validate the syscall BEFORE reading it */
   validate_word((uint32_t*)f->esp);
   uint32_t* args = ((uint32_t*)f->esp);
+  struct thread *t = thread_current();
+  struct process *pcb = t->pcb;
 
   /*
    * The following print statement, if uncommented, will print out the syscall
@@ -45,11 +49,54 @@ static void syscall_handler(struct intr_frame* f) {
   /* printf("System call number: %d\n", args[0]); */
 
   switch (args[0]) {
+    case SYS_HALT: // no args, no return
+      shutdown_power_off();
+      break;
+
     case SYS_EXIT:
       validate_word(&args[1]); /* exit status */
       f->eax = args[1];
-      printf("%s: exit(%d)\n", thread_current()->pcb->process_name, args[1]);
+      printf("%s: exit(%d)\n", pcb->process_name, args[1]);
       process_exit();
+      break;
+
+    case SYS_CREATE: // Creates a new file called file initially initial_size 
+      validate_word(&args[1]); /* file address */
+      validate_word(args[1]); /* file string */
+      validate_word(&args[2]); /* intial size */
+      {
+        const char *file = (char *)args[1];
+        int32_t initial_size = (int32_t)args[2];
+        f->eax = filesys_create(file, initial_size);
+      }
+      break;
+
+    case SYS_REMOVE: // Closes an existing file (if it exists)
+      validate_word(&args[1]); /* file address */
+      validate_word(args[1]); /* file string */
+      {
+        const char *file = (char *)args[1];
+        f->eax = filesys_remove(file);
+      }
+      break;
+
+    case SYS_OPEN: // Opens an existing file (if it exists)
+      validate_word(&args[1]); /* file address */
+      validate_word(args[1]); /* file string */
+      {
+        const char *file = (char *)args[1];
+        if (pcb->fd_size >= MAX_FILES) {
+          f->eax = -1;
+          return;
+        }
+        struct file* fp = filesys_open(file);
+        if (fp) {
+          pcb->fd_table[pcb->fd_size] = fp;
+          f->eax = pcb->fd_size++;
+        } else {
+          f->eax = -1;
+        }
+      }
       break;
 
     case SYS_WRITE:
@@ -58,7 +105,7 @@ static void syscall_handler(struct intr_frame* f) {
       validate_word(&args[3]); /* size */
       {
         int fd = args[1];
-        char* buf = (char*)args[2];
+        char *buf = (char *)args[2];
         uint32_t size = args[3];
         if (fd == STDOUT_FILENO) {
           putbuf(buf, size); // TODO: make multiple calls if size too large
