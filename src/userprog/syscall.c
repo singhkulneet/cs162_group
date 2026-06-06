@@ -28,7 +28,7 @@ static bool valid_user_byte(const void* addr) {
 
 /* Validate that a 4-byte word at WORD_ADDR is fully in mapped user memory */
 static void validate_word(const uint32_t* word_addr) {
-  if (!valid_user_byte(word_addr) || !valid_user_byte((const char*)word_addr + 3))
+  if (!valid_user_byte(word_addr) || !valid_user_byte(word_addr + 3))
     exit_invalid();
 }
 
@@ -64,7 +64,7 @@ static void syscall_handler(struct intr_frame* f) {
 
     case SYS_CREATE: // Creates a new file called file initially initial_size 
       validate_word(&args[1]); /* file address */
-      validate_word(args[1]); /* file string */
+      validate_word((uint32_t *)args[1]); /* file string */
       validate_word(&args[2]); /* intial size */
       {
         const char *file = (char *)args[1];
@@ -75,7 +75,7 @@ static void syscall_handler(struct intr_frame* f) {
 
     case SYS_REMOVE: // Closes an existing file (if it exists)
       validate_word(&args[1]); /* file address */
-      validate_word(args[1]); /* file string */
+      validate_word((uint32_t *)args[1]); /* file string */
       {
         const char *file = (char *)args[1];
         f->eax = filesys_remove(file);
@@ -84,7 +84,7 @@ static void syscall_handler(struct intr_frame* f) {
 
     case SYS_OPEN: // Opens an existing file (if it exists)
       validate_word(&args[1]); /* file address */
-      validate_word(args[1]); /* file string */
+      validate_word((uint32_t *)args[1]); /* file string */
       {
         const char *file = (char *)args[1];
         if (pcb->fd_size >= MAX_FILES) {
@@ -117,7 +117,7 @@ static void syscall_handler(struct intr_frame* f) {
     case SYS_READ:
       validate_word(&args[1]); /* fd */
       validate_word(&args[2]); /* buf pointer */
-      validate_word(args[2]); /* user buf pointer */
+      validate_word((uint32_t *)args[2]); /* user buf pointer */
       validate_word(&args[3]); /* size */
       {
         int fd = args[1];
@@ -139,7 +139,7 @@ static void syscall_handler(struct intr_frame* f) {
     case SYS_WRITE:
       validate_word(&args[1]); /* fd */
       validate_word(&args[2]); /* buf pointer */
-      validate_word(args[2]); /* buf pointer */
+      validate_word((uint32_t *)args[2]); /* buf pointer */
       validate_word(&args[3]); /* size */
       {
         int fd = args[1];
@@ -154,6 +154,46 @@ static void syscall_handler(struct intr_frame* f) {
           if (fp) wrote = file_write(fp, buf, size);
         }
         f->eax = wrote;
+      }
+      break;
+
+    case SYS_SEEK:
+      validate_word(&args[1]); /* fd */
+      validate_word(&args[2]); /* position */
+      {
+        int fd = args[1];
+        unsigned position = args[2];
+        if (fd < (int)pcb->fd_size && fd > STDOUT_FILENO) {
+          struct file *fp = pcb->fd_table[fd];
+          if (fp) file_seek(fp, position);
+        }
+      }
+      break;
+
+    case SYS_TELL:
+      validate_word(&args[1]); /* fd */
+      {
+        int fd = args[1];
+        int position = -1;
+        if (fd < (int)pcb->fd_size && fd > STDOUT_FILENO) {
+          struct file *fp = pcb->fd_table[fd];
+          if (fp) position = file_tell(fp);
+        }
+        f->eax = position;
+      }
+      break;
+
+    case SYS_CLOSE:
+      validate_word(&args[1]); /* fd */
+      {
+        int fd = args[1];
+        if (fd < (int)pcb->fd_size && fd > STDOUT_FILENO) {
+          struct file *fp = pcb->fd_table[fd];
+          if (fp) {
+            file_close(fp);
+            pcb->fd_table[fd] = NULL;
+          }
+        }
       }
       break;
 
