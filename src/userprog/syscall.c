@@ -62,6 +62,20 @@ static void syscall_handler(struct intr_frame* f) {
       process_exit();
       break;
 
+    case SYS_EXEC:
+      validate_word(&args[1]);           /* cmd address */
+      validate_word((uint32_t*)args[1]); /* cmd string */
+      {
+        const char* cmd_line = (char*)args[1];
+        f->eax = process_execute(cmd_line);
+      }
+      break;
+
+    case SYS_WAIT:
+      validate_word(&args[1]); /* pid */
+      { f->eax = process_wait(args[1]); }
+      break;
+
     case SYS_CREATE:                     // Creates a new file called file initially initial_size
       validate_word(&args[1]);           /* file address */
       validate_word((uint32_t*)args[1]); /* file string */
