@@ -41,11 +41,11 @@ void userprog_init(void) {
      so that t->pcb->pagedir is guaranteed to be NULL (the kernel's
      page directory) when t->pcb is assigned, because a timer interrupt
      can come at any time and activate our pagedir */
-  struct process* pcb = t->pcb;
-  pcb = calloc(sizeof(struct process), 1);
+  struct process* pcb = calloc(sizeof(struct process), 1);
   success = pcb != NULL;
-  pcb->fd_size = 2; // account for std in&out
-  memset(pcb->fd_table, 0, sizeof(pcb->fd_table)); // clear memory
+  t->pcb = pcb;
+  pcb->fd_size = 2;
+  memset(pcb->fd_table, 0, sizeof(pcb->fd_table));
 
   /* Kill the kernel if we did not succeed */
   ASSERT(success);
@@ -585,6 +585,10 @@ static void start_process(void* file_name_) {
     // does not try to activate our uninitialized pagedir
     new_pcb->pagedir = NULL;
     t->pcb = new_pcb;
+
+    // Initialize fd table
+    new_pcb->fd_size = 2;
+    memset(new_pcb->fd_table, 0, sizeof(new_pcb->fd_table));
 
     // Continue initializing the PCB as normal
     t->pcb->main_thread = t;

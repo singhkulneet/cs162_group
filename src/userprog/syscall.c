@@ -7,7 +7,9 @@
 #include "userprog/pagedir.h"
 #include "userprog/process.h"
 #include "devices/shutdown.h"
+#include "devices/input.h"
 #include "filesys/filesys.h"
+#include "filesys/file.h"
 
 static void syscall_handler(struct intr_frame*);
 
@@ -99,18 +101,59 @@ static void syscall_handler(struct intr_frame* f) {
       }
       break;
 
-    case SYS_WRITE:
+    case SYS_FILESIZE:
+      validate_word(&args[1]); /* fd */
+      {
+        int fd = args[1];
+        int size = -1;
+        if (fd < pcb->fd_size && fd > STDOUT_FILENO) {
+          struct file *fp = pcb->fd_table[fd];
+          if (fp) size = file_length(fp);
+        }
+        f->eax = size;
+      }
+      break;
+
+    case SYS_READ:
       validate_word(&args[1]); /* fd */
       validate_word(&args[2]); /* buf pointer */
+      validate_word(args[2]); /* user buf pointer */
       validate_word(&args[3]); /* size */
       {
         int fd = args[1];
         char *buf = (char *)args[2];
-        uint32_t size = args[3];
+        int size = args[3];
+        int read = -1;
+        if (fd == STDIN_FILENO) {
+          read = 0;
+          while (read < size)
+            buf[read++] = input_getc();
+        } else if (fd < pcb->fd_size && fd > STDOUT_FILENO) {
+          struct file *fp = pcb->fd_table[fd];
+          if (fp) read = file_read(fp, buf, size);
+        }
+        f->eax = read;
+      }
+      break;
+
+    case SYS_WRITE:
+      validate_word(&args[1]); /* fd */
+      validate_word(&args[2]); /* buf pointer */
+      validate_word(args[2]); /* buf pointer */
+      validate_word(&args[3]); /* size */
+      {
+        int fd = args[1];
+        char *buf = (char *)args[2];
+        int size = args[3];
+        int wrote = -1;
         if (fd == STDOUT_FILENO) {
           putbuf(buf, size); // TODO: make multiple calls if size too large
+          wrote = size;
+        } else if (fd < (int)pcb->fd_size && fd > STDOUT_FILENO) {
+          struct file *fp = pcb->fd_table[fd];
+          if (fp) wrote = file_write(fp, buf, size);
         }
-        f->eax = size;
+        f->eax = wrote;
       }
       break;
 
