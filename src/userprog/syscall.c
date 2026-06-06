@@ -38,8 +38,8 @@ static void syscall_handler(struct intr_frame* f) {
   /* Validate the syscall BEFORE reading it */
   validate_word((uint32_t*)f->esp);
   uint32_t* args = ((uint32_t*)f->esp);
-  struct thread *t = thread_current();
-  struct process *pcb = t->pcb;
+  struct thread* t = thread_current();
+  struct process* pcb = t->pcb;
 
   /*
    * The following print statement, if uncommented, will print out the syscall
@@ -62,31 +62,31 @@ static void syscall_handler(struct intr_frame* f) {
       process_exit();
       break;
 
-    case SYS_CREATE: // Creates a new file called file initially initial_size 
-      validate_word(&args[1]); /* file address */
-      validate_word((uint32_t *)args[1]); /* file string */
-      validate_word(&args[2]); /* intial size */
+    case SYS_CREATE:                     // Creates a new file called file initially initial_size
+      validate_word(&args[1]);           /* file address */
+      validate_word((uint32_t*)args[1]); /* file string */
+      validate_word(&args[2]);           /* intial size */
       {
-        const char *file = (char *)args[1];
+        const char* file = (char*)args[1];
         int32_t initial_size = (int32_t)args[2];
         f->eax = filesys_create(file, initial_size);
       }
       break;
 
-    case SYS_REMOVE: // Closes an existing file (if it exists)
-      validate_word(&args[1]); /* file address */
-      validate_word((uint32_t *)args[1]); /* file string */
+    case SYS_REMOVE:                     // Closes an existing file (if it exists)
+      validate_word(&args[1]);           /* file address */
+      validate_word((uint32_t*)args[1]); /* file string */
       {
-        const char *file = (char *)args[1];
+        const char* file = (char*)args[1];
         f->eax = filesys_remove(file);
       }
       break;
 
-    case SYS_OPEN: // Opens an existing file (if it exists)
-      validate_word(&args[1]); /* file address */
-      validate_word((uint32_t *)args[1]); /* file string */
+    case SYS_OPEN:                       // Opens an existing file (if it exists)
+      validate_word(&args[1]);           /* file address */
+      validate_word((uint32_t*)args[1]); /* file string */
       {
-        const char *file = (char *)args[1];
+        const char* file = (char*)args[1];
         if (pcb->fd_size >= MAX_FILES) {
           f->eax = -1;
           return;
@@ -107,21 +107,22 @@ static void syscall_handler(struct intr_frame* f) {
         int fd = args[1];
         int size = -1;
         if (fd < pcb->fd_size && fd > STDOUT_FILENO) {
-          struct file *fp = pcb->fd_table[fd];
-          if (fp) size = file_length(fp);
+          struct file* fp = pcb->fd_table[fd];
+          if (fp)
+            size = file_length(fp);
         }
         f->eax = size;
       }
       break;
 
     case SYS_READ:
-      validate_word(&args[1]); /* fd */
-      validate_word(&args[2]); /* buf pointer */
-      validate_word((uint32_t *)args[2]); /* user buf pointer */
-      validate_word(&args[3]); /* size */
+      validate_word(&args[1]);           /* fd */
+      validate_word(&args[2]);           /* buf pointer */
+      validate_word((uint32_t*)args[2]); /* user buf pointer */
+      validate_word(&args[3]);           /* size */
       {
         int fd = args[1];
-        char *buf = (char *)args[2];
+        char* buf = (char*)args[2];
         int size = args[3];
         int read = -1;
         if (fd == STDIN_FILENO) {
@@ -129,29 +130,31 @@ static void syscall_handler(struct intr_frame* f) {
           while (read < size)
             buf[read++] = input_getc();
         } else if (fd < pcb->fd_size && fd > STDOUT_FILENO) {
-          struct file *fp = pcb->fd_table[fd];
-          if (fp) read = file_read(fp, buf, size);
+          struct file* fp = pcb->fd_table[fd];
+          if (fp)
+            read = file_read(fp, buf, size);
         }
         f->eax = read;
       }
       break;
 
     case SYS_WRITE:
-      validate_word(&args[1]); /* fd */
-      validate_word(&args[2]); /* buf pointer */
-      validate_word((uint32_t *)args[2]); /* buf pointer */
-      validate_word(&args[3]); /* size */
+      validate_word(&args[1]);           /* fd */
+      validate_word(&args[2]);           /* buf pointer */
+      validate_word((uint32_t*)args[2]); /* buf pointer */
+      validate_word(&args[3]);           /* size */
       {
         int fd = args[1];
-        char *buf = (char *)args[2];
+        char* buf = (char*)args[2];
         int size = args[3];
         int wrote = -1;
         if (fd == STDOUT_FILENO) {
           putbuf(buf, size); // TODO: make multiple calls if size too large
           wrote = size;
         } else if (fd < (int)pcb->fd_size && fd > STDOUT_FILENO) {
-          struct file *fp = pcb->fd_table[fd];
-          if (fp) wrote = file_write(fp, buf, size);
+          struct file* fp = pcb->fd_table[fd];
+          if (fp)
+            wrote = file_write(fp, buf, size);
         }
         f->eax = wrote;
       }
@@ -164,8 +167,9 @@ static void syscall_handler(struct intr_frame* f) {
         int fd = args[1];
         unsigned position = args[2];
         if (fd < (int)pcb->fd_size && fd > STDOUT_FILENO) {
-          struct file *fp = pcb->fd_table[fd];
-          if (fp) file_seek(fp, position);
+          struct file* fp = pcb->fd_table[fd];
+          if (fp)
+            file_seek(fp, position);
         }
       }
       break;
@@ -176,8 +180,9 @@ static void syscall_handler(struct intr_frame* f) {
         int fd = args[1];
         int position = -1;
         if (fd < (int)pcb->fd_size && fd > STDOUT_FILENO) {
-          struct file *fp = pcb->fd_table[fd];
-          if (fp) position = file_tell(fp);
+          struct file* fp = pcb->fd_table[fd];
+          if (fp)
+            position = file_tell(fp);
         }
         f->eax = position;
       }
@@ -188,7 +193,7 @@ static void syscall_handler(struct intr_frame* f) {
       {
         int fd = args[1];
         if (fd < (int)pcb->fd_size && fd > STDOUT_FILENO) {
-          struct file *fp = pcb->fd_table[fd];
+          struct file* fp = pcb->fd_table[fd];
           if (fp) {
             file_close(fp);
             pcb->fd_table[fd] = NULL;
