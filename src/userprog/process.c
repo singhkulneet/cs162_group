@@ -22,6 +22,10 @@
 
 static thread_func start_process NO_RETURN;
 
+/* Pintos' file system is not thread-safe: serialize all file and filesys
+   calls (syscalls and process load/exit) behind this single global lock. */
+struct lock filesys_lock;
+
 /* Passed from process_execute() to start_process() via thread_create aux. */
 struct start_process_args {
   char* file_name;         /* palloc'd page; freed by start_process */
@@ -52,8 +56,11 @@ void userprog_init(void) {
   pcb->fd_size = 2;
   pcb->exit_code = 0;
   pcb->my_status = NULL;
+  pcb->executable = NULL;
   memset(pcb->fd_table, 0, sizeof(pcb->fd_table));
   list_init(&pcb->children);
+
+  lock_init(&filesys_lock);
 
   /* Kill the kernel if we did not succeed */
   ASSERT(success);
@@ -187,13 +194,20 @@ void process_exit(void) {
     NOT_REACHED();
   }
 
-  /* Close all open file descriptors. */
+  /* Close all open file descriptors and the executable (re-allowing writes). */
+  lock_acquire(&filesys_lock);
   for (int i = 2; i < cur->pcb->fd_size; i++) {
     if (cur->pcb->fd_table[i] != NULL) {
       file_close(cur->pcb->fd_table[i]);
       cur->pcb->fd_table[i] = NULL;
     }
   }
+  if (cur->pcb->executable != NULL) {
+    file_allow_write(cur->pcb->executable);
+    file_close(cur->pcb->executable);
+    cur->pcb->executable = NULL;
+  }
+  lock_release(&filesys_lock);
 
   /* Signal our parent with exit code, then release our ref. */
   struct child_status* my_status = cur->pcb->my_status;
@@ -342,6 +356,10 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
   bool success = false;
   int i;
 
+  /* Pintos' file system is not thread-safe; hold the lock for the
+     entire load (every goto done below jumps to the matching release). */
+  lock_acquire(&filesys_lock);
+
   /* Allocate and activate page directory. */
   t->pcb->pagedir = pagedir_create();
   if (t->pcb->pagedir == NULL)
@@ -360,6 +378,9 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
     printf("load: %s: open failed\n", exec_name);
     goto done;
   }
+
+  /* Prevent writes to an executable while it is running. */
+  file_deny_write(file);
 
   /* Read and verify executable header. */
   if (file_read(file, &ehdr, sizeof ehdr) != sizeof ehdr ||
@@ -430,7 +451,16 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
 
 done:
   /* We arrive here whether the load is successful or not. */
-  file_close(file);
+  if (success) {
+    /* Keep the executable open (with writes denied) for the lifetime
+       of the process; it is closed and re-allowed in process_exit(). */
+    t->pcb->executable = file;
+  } else {
+    if (file != NULL)
+      file_allow_write(file);
+    file_close(file);
+  }
+  lock_release(&filesys_lock);
   return success;
 }
 
@@ -708,6 +738,7 @@ static void start_process(void* args_) {
     new_pcb->fd_size = 2;
     new_pcb->exit_code = -1;
     new_pcb->my_status = cs;
+    new_pcb->executable = NULL;
     memset(new_pcb->fd_table, 0, sizeof(new_pcb->fd_table));
     list_init(&new_pcb->children);
 

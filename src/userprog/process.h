@@ -48,7 +48,11 @@ struct process {
   int exit_code;                  /* Set before process_exit(); default -1 */
   struct list children;           /* List of child_status for live/unwaited children */
   struct child_status* my_status; /* Our entry in our parent's children list */
+  struct file* executable;        /* Backing executable file; writes denied while running */
 };
+
+/* Global lock serializing all filesystem access (Pintos' filesys is not thread-safe). */
+extern struct lock filesys_lock;
 
 void userprog_init(void);
 

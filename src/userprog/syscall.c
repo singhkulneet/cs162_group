@@ -98,7 +98,9 @@ static void syscall_handler(struct intr_frame* f) {
       {
         const char* file = (char*)args[1];
         int32_t initial_size = (int32_t)args[2];
+        lock_acquire(&filesys_lock);
         f->eax = filesys_create(file, initial_size);
+        lock_release(&filesys_lock);
       }
       break;
 
@@ -107,7 +109,9 @@ static void syscall_handler(struct intr_frame* f) {
       validate_word((uint32_t*)args[1]); /* file string */
       {
         const char* file = (char*)args[1];
+        lock_acquire(&filesys_lock);
         f->eax = filesys_remove(file);
+        lock_release(&filesys_lock);
       }
       break;
 
@@ -120,7 +124,9 @@ static void syscall_handler(struct intr_frame* f) {
           f->eax = -1;
           return;
         }
+        lock_acquire(&filesys_lock);
         struct file* fp = filesys_open(file);
+        lock_release(&filesys_lock);
         if (fp) {
           pcb->fd_table[pcb->fd_size] = fp;
           f->eax = pcb->fd_size++;
@@ -137,8 +143,11 @@ static void syscall_handler(struct intr_frame* f) {
         int size = -1;
         if (fd < pcb->fd_size && fd > STDOUT_FILENO) {
           struct file* fp = pcb->fd_table[fd];
-          if (fp)
+          if (fp) {
+            lock_acquire(&filesys_lock);
             size = file_length(fp);
+            lock_release(&filesys_lock);
+          }
         }
         f->eax = size;
       }
@@ -160,8 +169,11 @@ static void syscall_handler(struct intr_frame* f) {
             buf[read++] = input_getc();
         } else if (fd < pcb->fd_size && fd > STDOUT_FILENO) {
           struct file* fp = pcb->fd_table[fd];
-          if (fp)
+          if (fp) {
+            lock_acquire(&filesys_lock);
             read = file_read(fp, buf, size);
+            lock_release(&filesys_lock);
+          }
         }
         f->eax = read;
       }
@@ -182,8 +194,11 @@ static void syscall_handler(struct intr_frame* f) {
           wrote = size;
         } else if (fd < (int)pcb->fd_size && fd > STDOUT_FILENO) {
           struct file* fp = pcb->fd_table[fd];
-          if (fp)
+          if (fp) {
+            lock_acquire(&filesys_lock);
             wrote = file_write(fp, buf, size);
+            lock_release(&filesys_lock);
+          }
         }
         f->eax = wrote;
       }
@@ -197,8 +212,11 @@ static void syscall_handler(struct intr_frame* f) {
         unsigned position = args[2];
         if (fd < (int)pcb->fd_size && fd > STDOUT_FILENO) {
           struct file* fp = pcb->fd_table[fd];
-          if (fp)
+          if (fp) {
+            lock_acquire(&filesys_lock);
             file_seek(fp, position);
+            lock_release(&filesys_lock);
+          }
         }
       }
       break;
@@ -210,8 +228,11 @@ static void syscall_handler(struct intr_frame* f) {
         int position = -1;
         if (fd < (int)pcb->fd_size && fd > STDOUT_FILENO) {
           struct file* fp = pcb->fd_table[fd];
-          if (fp)
+          if (fp) {
+            lock_acquire(&filesys_lock);
             position = file_tell(fp);
+            lock_release(&filesys_lock);
+          }
         }
         f->eax = position;
       }
@@ -224,7 +245,9 @@ static void syscall_handler(struct intr_frame* f) {
         if (fd < (int)pcb->fd_size && fd > STDOUT_FILENO) {
           struct file* fp = pcb->fd_table[fd];
           if (fp) {
+            lock_acquire(&filesys_lock);
             file_close(fp);
+            lock_release(&filesys_lock);
             pcb->fd_table[fd] = NULL;
           }
         }
