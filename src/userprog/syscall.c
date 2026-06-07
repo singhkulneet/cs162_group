@@ -15,7 +15,9 @@ static void syscall_handler(struct intr_frame*);
 
 /* Terminate the current process with exit code -1. */
 static void exit_invalid(void) {
-  printf("%s: exit(%d)\n", thread_current()->pcb->process_name, -1);
+  struct process* pcb = thread_current()->pcb;
+  pcb->exit_code = -1;
+  printf("%s: exit(%d)\n", pcb->process_name, -1);
   process_exit();
   NOT_REACHED();
 }
@@ -28,8 +30,20 @@ static bool valid_user_byte(const void* addr) {
 
 /* Validate that a 4-byte word at WORD_ADDR is fully in mapped user memory */
 static void validate_word(const uint32_t* word_addr) {
-  if (!valid_user_byte(word_addr) || !valid_user_byte(word_addr + 3))
+  if (!valid_user_byte(word_addr) || !valid_user_byte((const char*)word_addr + 3))
     exit_invalid();
+}
+
+/* Validate a null-terminated user string. */
+static void validate_string(const char* str) {
+  const char* p = str;
+  while (true) {
+    if (!valid_user_byte(p))
+      exit_invalid();
+    if (*p == '\0')
+      break;
+    p++;
+  }
 }
 
 void syscall_init(void) { intr_register_int(0x30, 3, INTR_ON, syscall_handler, "syscall"); }
@@ -58,13 +72,14 @@ static void syscall_handler(struct intr_frame* f) {
     case SYS_EXIT:
       validate_word(&args[1]); /* exit status */
       f->eax = args[1];
+      pcb->exit_code = (int)args[1];
       printf("%s: exit(%d)\n", pcb->process_name, args[1]);
       process_exit();
       break;
 
     case SYS_EXEC:
-      validate_word(&args[1]);           /* cmd address */
-      validate_word((uint32_t*)args[1]); /* cmd string */
+      validate_word(&args[1]); /* cmd address */
+      validate_string((const char*)args[1]);
       {
         const char* cmd_line = (char*)args[1];
         f->eax = process_execute(cmd_line);

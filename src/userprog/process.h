@@ -2,6 +2,7 @@
 #define USERPROG_PROCESS_H
 
 #include "threads/thread.h"
+#include "threads/synch.h"
 #include <stdint.h>
 
 // At most 8MB can be allocated to the stack
@@ -18,6 +19,20 @@ typedef tid_t pid_t;
 typedef void (*pthread_fun)(void*);
 typedef void (*stub_fun)(pthread_fun, void*);
 
+/* Shared between a parent and one of its children.
+   ref_count starts at 2; each side decrements on cleanup; last one frees it. */
+struct child_status {
+  pid_t pid;
+  int exit_code;
+  bool waited;
+  bool load_success;
+  struct semaphore load_sema; /* child signals after load attempt */
+  struct semaphore wait_sema; /* child signals on exit */
+  int ref_count;
+  struct lock ref_lock;
+  struct list_elem elem;
+};
+
 /* The process control block for a given process. Since
    there can be multiple threads per process, we need a separate
    PCB from the TCB. All TCBs in a process will have a pointer
@@ -30,6 +45,9 @@ struct process {
   struct thread* main_thread; /* Pointer to main thread */
   struct file* fd_table[128];
   uint8_t fd_size;
+  int exit_code;                  /* Set before process_exit(); default -1 */
+  struct list children;           /* List of child_status for live/unwaited children */
+  struct child_status* my_status; /* Our entry in our parent's children list */
 };
 
 void userprog_init(void);

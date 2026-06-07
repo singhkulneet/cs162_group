@@ -286,3 +286,4 @@ pintos/**/build
 
 # Others
 *.log
+*.dsk
