@@ -27,6 +27,18 @@ static bool load(const char* file_name, void (**eip)(void), void** esp);
 static bool load_stack(const char* file_name, void** esp);
 bool setup_thread(void (**eip)(void), void** esp);
 void push(void** stack, void* buf, size_t size);
+void init_pcb_thread(struct thread *t, struct process *pcb);
+
+void init_pcb_thread(struct thread *t, struct process *pcb) {
+  t->pcb = pcb;
+  pcb->fd_size = 2;
+  memset(pcb->fd_table, 0, sizeof(pcb->fd_table));
+  pcb->exit_code = 0;
+
+  t->pcb->main_thread = t;
+  strlcpy(t->pcb->process_name, t->name, sizeof t->name);
+}
+
 
 /* Initializes user programs in the system by ensuring the main
    thread has a minimal PCB so that it can execute and wait for
@@ -43,9 +55,7 @@ void userprog_init(void) {
      can come at any time and activate our pagedir */
   struct process* pcb = calloc(sizeof(struct process), 1);
   success = pcb != NULL;
-  t->pcb = pcb;
-  pcb->fd_size = 2;
-  memset(pcb->fd_table, 0, sizeof(pcb->fd_table));
+  init_pcb_thread(t, pcb);
 
   /* Kill the kernel if we did not succeed */
   ASSERT(success);
@@ -98,17 +108,18 @@ int process_wait(pid_t child_pid UNUSED) {
 /* Free the current process's resources. */
 void process_exit(void) {
   struct thread* cur = thread_current();
+  struct process* pcb = cur->pcb;
   uint32_t* pd;
 
   /* If this thread does not have a PCB, don't worry */
-  if (cur->pcb == NULL) {
+  if (pcb == NULL) {
     thread_exit();
     NOT_REACHED();
   }
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
-  pd = cur->pcb->pagedir;
+  pd = pcb->pagedir;
   if (pd != NULL) {
     /* Correct ordering here is crucial.  We must set
          cur->pcb->pagedir to NULL before switching page directories,
@@ -117,17 +128,18 @@ void process_exit(void) {
          directory before destroying the process's page
          directory, or our active page directory will be one
          that's been freed (and cleared). */
-    cur->pcb->pagedir = NULL;
+    pcb->pagedir = NULL;
     pagedir_activate(NULL);
     pagedir_destroy(pd);
   }
-
+  // Print exit code
+  printf("%s: exit(%d)\n", pcb->process_name, pcb->exit_code);
   /* Free the PCB of this process and kill this thread
      Avoid race where PCB is freed before t->pcb is set to NULL
      If this happens, then an unfortuantely timed timer interrupt
      can try to activate the pagedir, but it is now freed memory */
-  struct process* pcb_to_free = cur->pcb;
-  cur->pcb = NULL;
+  struct process* pcb_to_free = pcb;
+  pcb = NULL;
   free(pcb_to_free);
 
   sema_up(&temporary);
@@ -446,7 +458,7 @@ void push(void** stack, void* buf, size_t size) {
 static bool load_stack(const char* file_name, void** esp) {
   if (!file_name || !esp)
     return false;
-  // Copy file name to string on heap
+  // Copy file name plus args to stack buf (needed for strtok)
   size_t str_size = strlen(file_name) + 1;
   char file_cpy[str_size];
   strlcpy(file_cpy, file_name, str_size);
@@ -584,15 +596,7 @@ static void start_process(void* file_name_) {
     // Ensure that timer_interrupt() -> schedule() -> process_activate()
     // does not try to activate our uninitialized pagedir
     new_pcb->pagedir = NULL;
-    t->pcb = new_pcb;
-
-    // Initialize fd table
-    new_pcb->fd_size = 2;
-    memset(new_pcb->fd_table, 0, sizeof(new_pcb->fd_table));
-
-    // Continue initializing the PCB as normal
-    t->pcb->main_thread = t;
-    strlcpy(t->pcb->process_name, t->name, sizeof t->name);
+    init_pcb_thread(t, new_pcb);
   }
 
   /* Initialize interrupt frame and load executable. */

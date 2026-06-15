@@ -30,6 +30,7 @@ struct process {
   struct thread* main_thread; /* Pointer to main thread */
   struct file* fd_table[128];
   uint8_t fd_size;
+  int exit_code;
 };
 
 void userprog_init(void);

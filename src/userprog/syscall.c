@@ -13,13 +13,6 @@
 
 static void syscall_handler(struct intr_frame*);
 
-/* Terminate the current process with exit code -1. */
-static void exit_invalid(void) {
-  printf("%s: exit(%d)\n", thread_current()->pcb->process_name, -1);
-  process_exit();
-  NOT_REACHED();
-}
-
 /* Return true if ADDR is a valid, mapped user-space byte */
 static bool valid_user_byte(const void* addr) {
   return addr != NULL && is_user_vaddr(addr) &&
@@ -28,8 +21,11 @@ static bool valid_user_byte(const void* addr) {
 
 /* Validate that a 4-byte word at WORD_ADDR is fully in mapped user memory */
 static void validate_word(const uint32_t* word_addr) {
-  if (!valid_user_byte(word_addr) || !valid_user_byte(word_addr + 3))
-    exit_invalid();
+  if (!valid_user_byte(word_addr) || !valid_user_byte(word_addr + 3)) {
+    thread_current()->pcb->exit_code = -1;
+    process_exit();
+    NOT_REACHED();
+  }
 }
 
 void syscall_init(void) { intr_register_int(0x30, 3, INTR_ON, syscall_handler, "syscall"); }
@@ -58,7 +54,7 @@ static void syscall_handler(struct intr_frame* f) {
     case SYS_EXIT:
       validate_word(&args[1]); /* exit status */
       f->eax = args[1];
-      printf("%s: exit(%d)\n", pcb->process_name, args[1]);
+      pcb->exit_code = (int)args[1];
       process_exit();
       break;
 
