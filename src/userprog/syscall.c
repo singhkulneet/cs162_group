@@ -77,6 +77,10 @@ static void syscall_handler(struct intr_frame* f) {
       process_exit();
       break;
 
+    case SYS_FORK: // no args; returns child's pid in parent, 0 in child
+      f->eax = process_fork(f);
+      break;
+
     case SYS_EXEC:
       validate_word(&args[1]); /* cmd address */
       validate_string((const char*)args[1]);

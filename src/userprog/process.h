@@ -54,9 +54,12 @@ struct process {
 /* Global lock serializing all filesystem access (Pintos' filesys is not thread-safe). */
 extern struct lock filesys_lock;
 
+struct intr_frame;
+
 void userprog_init(void);
 
 pid_t process_execute(const char* file_name);
+pid_t process_fork(struct intr_frame* f);
 int process_wait(pid_t);
 void process_exit(void);
 void process_activate(void);

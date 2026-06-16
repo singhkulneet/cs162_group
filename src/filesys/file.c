@@ -8,6 +8,7 @@ struct file {
   struct inode* inode; /* File's inode. */
   off_t pos;           /* Current position. */
   bool deny_write;     /* Has file_deny_write() been called? */
+  int ref_cnt;         /* Number of owners (e.g. fork'd fd table entries). */
 };
 
 /* Opens a file for the given INODE, of which it takes ownership,
@@ -19,6 +20,7 @@ struct file* file_open(struct inode* inode) {
     file->inode = inode;
     file->pos = 0;
     file->deny_write = false;
+    file->ref_cnt = 1;
     return file;
   } else {
     inode_close(inode);
@@ -33,9 +35,19 @@ struct file* file_reopen(struct file* file) {
   return file_open(inode_reopen(file->inode));
 }
 
-/* Closes FILE. */
+/* Adds another owner to FILE (e.g. when a forked process inherits
+   a descriptor) and returns FILE. The file is only actually closed
+   once every owner has called file_close(). */
+struct file* file_ref(struct file* file) {
+  if (file != NULL)
+    file->ref_cnt++;
+  return file;
+}
+
+/* Closes FILE. The underlying inode is only released once every
+   owner (see file_ref()) has closed its reference. */
 void file_close(struct file* file) {
-  if (file != NULL) {
+  if (file != NULL && --file->ref_cnt == 0) {
     file_allow_write(file);
     inode_close(file->inode);
     free(file);

@@ -21,6 +21,7 @@
 #include "threads/vaddr.h"
 
 static thread_func start_process NO_RETURN;
+static thread_func start_forked_process NO_RETURN;
 
 /* Pintos' file system is not thread-safe: serialize all file and filesys
    calls (syscalls and process load/exit) behind this single global lock. */
@@ -31,6 +32,16 @@ struct start_process_args {
   char* file_name;         /* palloc'd page; freed by start_process */
   struct child_status* cs; /* shared with parent; freed by last user */
 };
+
+/* Passed from process_fork() to start_forked_process() via thread_create aux. */
+struct start_fork_args {
+  struct intr_frame parent_if; /* snapshot of parent's registers at the syscall */
+  struct process* parent_pcb;  /* parent stays blocked on cs->load_sema, so this is stable */
+  struct child_status* cs;     /* shared with parent; freed by last user */
+};
+
+static bool copy_address_space(uint32_t* parent_pd, uint32_t* child_pd);
+
 // static thread_func start_pthread NO_RETURN;
 static bool load(const char* file_name, void (**eip)(void), void** esp);
 static bool load_stack(const char* file_name, void** esp);
@@ -128,6 +139,71 @@ pid_t process_execute(const char* file_name) {
 
   if (!cs->load_success) {
     /* Child failed; it already decremented its ref. We decrement ours. */
+    lock_acquire(&cs->ref_lock);
+    cs->ref_count--;
+    bool should_free = (cs->ref_count == 0);
+    lock_release(&cs->ref_lock);
+    if (should_free)
+      free(cs);
+    return TID_ERROR;
+  }
+
+  ret = cs->pid;
+  list_push_back(&thread_current()->pcb->children, &cs->elem);
+  return ret;
+}
+
+/* Creates a new process that is a copy of the calling process: same
+   address space contents and file descriptors (sharing the same
+   underlying struct file, so e.g. seeks are visible to both sides).
+   In the parent, returns the child's pid, or -1 if the child could
+   not be created or set up. In the child, returns 0 (via F->eax,
+   copied from PARENT_IF below).
+
+   Synchronization mirrors process_execute(): the parent blocks on
+   cs->load_sema until the child has either finished copying its
+   state (success) or given up (failure), so the parent never sees
+   a half-built child and always knows whether to return -1. */
+pid_t process_fork(struct intr_frame* f) {
+  struct start_fork_args* args;
+  struct child_status* cs;
+  tid_t tid;
+  pid_t ret;
+
+  cs = malloc(sizeof(struct child_status));
+  if (cs == NULL)
+    return TID_ERROR;
+  sema_init(&cs->load_sema, 0);
+  sema_init(&cs->wait_sema, 0);
+  lock_init(&cs->ref_lock);
+  cs->ref_count = 2;
+  cs->waited = false;
+  cs->load_success = false;
+  cs->exit_code = -1;
+  cs->pid = TID_ERROR;
+
+  args = malloc(sizeof(struct start_fork_args));
+  if (args == NULL) {
+    free(cs);
+    return TID_ERROR;
+  }
+  args->parent_if = *f;
+  args->parent_pcb = thread_current()->pcb;
+  args->cs = cs;
+
+  tid = thread_create(thread_current()->pcb->process_name, PRI_DEFAULT, start_forked_process, args);
+  if (tid == TID_ERROR) {
+    free(args);
+    free(cs);
+    return TID_ERROR;
+  }
+
+  /* Wait until the child has copied our state (or given up). The
+     parent is blocked here the whole time, so our address space and
+     fd table cannot change underneath the child while it copies them. */
+  sema_down(&cs->load_sema);
+
+  if (!cs->load_success) {
     lock_acquire(&cs->ref_lock);
     cs->ref_count--;
     bool should_free = (cs->ref_count == 0);
@@ -795,6 +871,118 @@ static void start_process(void* args_) {
      arguments on the stack in the form of a `struct intr_frame',
      we just point the stack pointer (%esp) to our stack frame
      and jump to it. */
+  asm volatile("movl %0, %%esp; jmp intr_exit" : : "g"(&if_) : "memory");
+  NOT_REACHED();
+}
+
+/* Copies every mapped user page from PARENT_PD into CHILD_PD, allocating
+   a fresh physical frame for each one and preserving the read/write bit.
+   Both page directories' kernel-side data structures live in plain kernel
+   memory, so this works regardless of which pagedir is currently active.
+   Returns false (leaving CHILD_PD partially populated; the caller tears
+   the whole pagedir down via pagedir_destroy on failure) if we run out
+   of memory. */
+static bool copy_address_space(uint32_t* parent_pd, uint32_t* child_pd) {
+  for (uint8_t* upage = 0; upage < (uint8_t*)PHYS_BASE; upage += PGSIZE) {
+    uint8_t* parent_kpage = pagedir_get_page(parent_pd, upage);
+    if (parent_kpage == NULL)
+      continue;
+
+    uint8_t* child_kpage = palloc_get_page(PAL_USER);
+    if (child_kpage == NULL)
+      return false;
+    memcpy(child_kpage, parent_kpage, PGSIZE);
+
+    bool writable = pagedir_is_writable(parent_pd, upage);
+    if (!pagedir_set_page(child_pd, upage, child_kpage, writable)) {
+      palloc_free_page(child_kpage);
+      return false;
+    }
+  }
+  return true;
+}
+
+/* A thread function that builds a forked child process: same address
+   space contents and file descriptor table as its parent, and resumes
+   user execution at the same spot the parent called fork() from (with
+   %eax forced to 0, since that's the child's fork() return value). */
+static void start_forked_process(void* args_) {
+  struct start_fork_args* args = (struct start_fork_args*)args_;
+  struct intr_frame if_ = args->parent_if;
+  struct process* parent_pcb = args->parent_pcb;
+  struct child_status* cs = args->cs;
+  free(args);
+
+  struct thread* t = thread_current();
+  bool success, pcb_success;
+
+  /* Allocate and initialize the PCB exactly like start_process() does. */
+  struct process* new_pcb = malloc(sizeof(struct process));
+  success = pcb_success = new_pcb != NULL;
+  if (success) {
+    new_pcb->pagedir = NULL;
+    t->pcb = new_pcb;
+    new_pcb->fd_size = 2;
+    new_pcb->exit_code = -1;
+    new_pcb->my_status = cs;
+    new_pcb->executable = NULL;
+    memset(new_pcb->fd_table, 0, sizeof(new_pcb->fd_table));
+    list_init(&new_pcb->children);
+    new_pcb->main_thread = t;
+    strlcpy(new_pcb->process_name, t->name, sizeof t->name);
+  }
+
+  /* Build the child's address space by copying the parent's page by page. */
+  if (success) {
+    new_pcb->pagedir = pagedir_create();
+    success = new_pcb->pagedir != NULL;
+  }
+  if (success) {
+    process_activate();
+    success = copy_address_space(parent_pcb->pagedir, new_pcb->pagedir);
+  }
+
+  /* Inherit file descriptors. They reference the SAME struct file as the
+     parent's (file_ref bumps its ref count) so that seeks/positions are
+     shared, matching real fork() semantics; file_close() only frees the
+     struct once both sides have closed their copy. */
+  if (success) {
+    lock_acquire(&filesys_lock);
+    for (int fd = 2; fd < parent_pcb->fd_size; fd++) {
+      if (parent_pcb->fd_table[fd] != NULL)
+        new_pcb->fd_table[fd] = file_ref(parent_pcb->fd_table[fd]);
+    }
+    lock_release(&filesys_lock);
+    new_pcb->fd_size = parent_pcb->fd_size;
+  }
+
+  /* The child's fork() returns 0; everything else about its register
+     state is an exact snapshot of the parent's at the syscall site. */
+  if_.eax = 0;
+
+  /* Tell the parent whether we're ready to run. */
+  cs->load_success = success;
+  if (success)
+    cs->pid = t->tid;
+  else {
+    lock_acquire(&cs->ref_lock);
+    cs->ref_count--;
+    bool should_free = (cs->ref_count == 0);
+    lock_release(&cs->ref_lock);
+    if (should_free)
+      free(cs);
+  }
+  sema_up(&cs->load_sema);
+
+  if (!success && pcb_success) {
+    struct process* pcb_to_free = t->pcb;
+    t->pcb = NULL;
+    free(pcb_to_free);
+  }
+
+  if (!success)
+    thread_exit();
+
   asm volatile("movl %0, %%esp; jmp intr_exit" : : "g"(&if_) : "memory");
   NOT_REACHED();
 }
